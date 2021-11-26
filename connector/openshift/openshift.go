@@ -38,8 +38,9 @@ type Config struct {
 }
 
 var (
-	_ connector.CallbackConnector = (*openshiftConnector)(nil)
-	_ connector.RefreshConnector  = (*openshiftConnector)(nil)
+	_ connector.CallbackConnector      = (*openshiftConnector)(nil)
+	_ connector.RefreshConnector       = (*openshiftConnector)(nil)
+	_ connector.CheckEndpointConnector = (*openshiftConnector)(nil)
 )
 
 type openshiftConnector struct {
@@ -78,7 +79,8 @@ func (c *Config) Open(id string, logger log.Logger) (conn connector.Connector, e
 // OpenWithHTTPClient returns a connector which can be used to login users through an upstream
 // OpenShift OAuth2 provider. It provides the ability to inject a http.Client.
 func (c *Config) OpenWithHTTPClient(id string, logger log.Logger,
-	httpClient *http.Client) (conn connector.Connector, err error) {
+	httpClient *http.Client,
+) (conn connector.Connector, err error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	wellKnownURL := strings.TrimSuffix(c.Issuer, "/") + wellKnownURLPath
@@ -125,6 +127,7 @@ func (c *Config) OpenWithHTTPClient(id string, logger log.Logger,
 		Scopes:      []string{"user:info"},
 		RedirectURL: c.RedirectURI,
 	}
+
 	return &openshiftConnector, nil
 }
 
@@ -156,7 +159,8 @@ func (e *oauth2Error) Error() string {
 
 // HandleCallback parses the request and returns the user's identity
 func (c *openshiftConnector) HandleCallback(s connector.Scopes,
-	r *http.Request) (identity connector.Identity, err error) {
+	r *http.Request,
+) (identity connector.Identity, err error) {
 	q := r.URL.Query()
 	if errType := q.Get("error"); errType != "" {
 		return identity, &oauth2Error{errType, q.Get("error_description")}
@@ -176,7 +180,8 @@ func (c *openshiftConnector) HandleCallback(s connector.Scopes,
 }
 
 func (c *openshiftConnector) Refresh(ctx context.Context, s connector.Scopes,
-	oldID connector.Identity) (connector.Identity, error) {
+	oldID connector.Identity,
+) (connector.Identity, error) {
 	var token oauth2.Token
 	err := json.Unmarshal(oldID.ConnectorData, &token)
 	if err != nil {
@@ -189,7 +194,8 @@ func (c *openshiftConnector) Refresh(ctx context.Context, s connector.Scopes,
 }
 
 func (c *openshiftConnector) identity(ctx context.Context, s connector.Scopes,
-	token *oauth2.Token) (identity connector.Identity, err error) {
+	token *oauth2.Token,
+) (identity connector.Identity, err error) {
 	client := c.oauth2Config.Client(ctx, token)
 	user, err := c.user(ctx, client)
 	if err != nil {
@@ -251,6 +257,24 @@ func (c *openshiftConnector) user(ctx context.Context, client *http.Client) (u u
 	}
 
 	return u, err
+}
+
+func (c *openshiftConnector) CheckEndpoint(ctx context.Context) error {
+	return c.checkOAuth2EndpointsAvailability(ctx)
+}
+
+func (c *openshiftConnector) checkOAuth2EndpointsAvailability(ctx context.Context) error {
+	for _, endpoint := range []string{c.oauth2Config.Endpoint.AuthURL, c.oauth2Config.Endpoint.TokenURL} {
+		req, err := http.NewRequest(http.MethodHead, endpoint, nil)
+		if err != nil {
+			return err
+		}
+		_, err = c.httpClient.Do(req.WithContext(ctx))
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func validateAllowedGroups(userGroups, allowedGroups []string) bool {
